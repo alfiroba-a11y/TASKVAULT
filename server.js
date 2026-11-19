@@ -92,7 +92,7 @@ const taskTitles = [
 ];
 const TASKS = taskTitles.map((title, i) => ({ id: `task-${String(i + 1).padStart(2, '0')}`, title, category: categories[i % categories.length], amount: [0.12, 0.18, 0.25, 0.30, 0.45, 0.60, 0.75][i % 7], duration: `${2 + (i % 6)} min`, icon: ['📝', '🔎', '✨', '🛍️', '💡', '🎯', '🌱', '📱', '🎧', '🌍'][i % 10], desc: `A short sponsored ${categories[i % categories.length].toLowerCase()} activity. Explore the content and complete the task to receive the listed reward.` }));
 const nairobiDate = (date = new Date()) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Nairobi', year: 'numeric', month: '2-digit', day: '2-digit' }).format(date);
-function publicMember(user) { return { id: user._id, name: user.name, email: user.email, status: user.status, humanVerified: Boolean(user.humanVerified), balance: user.balance, earned: user.earned, points: user.points, streak: user.streak, referrals: user.referrals, referralCode: user.referralCode, checkinDate: user.checkinDate || null, completedTasks: user.completedTasks, completedVideos: user.completedVideos, completedQuizzes: user.completedQuizzes, activity: user.activity.slice(-20).reverse() }; }
+function publicMember(user) { return { id: user._id, name: user.name, email: user.email, status: user.status, humanVerified: Boolean(user.humanVerified), createdAt: user.createdAt, balance: user.balance, earned: user.earned, points: user.points, streak: user.streak, referrals: user.referrals, referralCode: user.referralCode, checkinDate: user.checkinDate || null, completedTasks: user.completedTasks, completedVideos: user.completedVideos, completedQuizzes: user.completedQuizzes, activity: user.activity.slice(-20).reverse() }; }
 function requireHuman(user, res) { if (user.humanVerified) return true; json(res, 403, { error: 'Complete the face scan before using earning features.' }); return false; }
 const money = n => `$${Number(n).toFixed(2)}`;
 function award(user, amount, points, icon, title) { user.balance = Number((user.balance + amount).toFixed(2)); user.earned = Number((user.earned + amount).toFixed(2)); user.points += points; user.activity.push({ icon, title, meta: 'Just now', amount: `+ ${amount ? money(amount) : `${points} points`}` }); user.activity = user.activity.slice(-30); }
@@ -182,6 +182,24 @@ const server = createServer(async (req, res) => {
       setSession(res, req, 'tv_session', { uid: String(user._id) }); return json(res, 200, { user: publicMember(user) });
     }
     if (req.method === 'POST' && url.pathname === '/api/auth/logout') { clearSession(res, req, 'tv_session'); return json(res, 200, { ok: true }); }
+    if (req.method === 'PATCH' && url.pathname === '/api/profile') {
+      if (!requireModels(res, User)) return;
+      const token = readToken(req, 'tv_session'), user = token?.uid ? await User.findById(token.uid) : null;
+      if (!user || user.status !== 'Active') return json(res, 401, { error: 'Sign in to update your profile.' });
+      const input = JSON.parse((await body(req)).toString('utf8'));
+      if (input.name !== undefined) {
+        const name = String(input.name || '').trim().slice(0, 80);
+        if (name.length < 2) return json(res, 400, { error: 'Your name must contain at least 2 characters.' });
+        user.name = name;
+      }
+      if (input.newPassword) {
+        const current = scryptSync(String(input.currentPassword || ''), user.passwordSalt, 64), expected = Buffer.from(user.passwordHash, 'hex');
+        if (current.length !== expected.length || !timingSafeEqual(current, expected)) return json(res, 400, { error: 'Current password is incorrect.' });
+        if (String(input.newPassword).length < 8) return json(res, 400, { error: 'New password must contain at least 8 characters.' });
+        user.passwordSalt = randomBytes(16).toString('hex'); user.passwordHash = scryptSync(String(input.newPassword), user.passwordSalt, 64).toString('hex');
+      }
+      await user.save(); return json(res, 200, { user: publicMember(user) });
+    }
     if (req.method === 'POST' && url.pathname === '/api/rewards/checkin') {
       if (!requireModels(res, User)) return;
       const token = readToken(req, 'tv_session'), user = token?.uid ? await User.findById(token.uid) : null;
