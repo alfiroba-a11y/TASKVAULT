@@ -5,7 +5,7 @@ import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('.', import.meta.url));
-const types = { '.html': 'text/html; charset=utf-8', '.css': 'text/css', '.js': 'text/javascript', '.json': 'application/json', '.webmanifest': 'application/manifest+json', '.svg': 'image/svg+xml' };
+const types = { '.html': 'text/html; charset=utf-8', '.css': 'text/css', '.js': 'text/javascript', '.json': 'application/json', '.webmanifest': 'application/manifest+json', '.svg': 'image/svg+xml', '.png': 'image/png' };
 let mongoose = null, Payment = null, User = null, Video = null, Withdrawal = null, databaseReady = false, databaseError = 'MongoDB is not configured.';
 try {
   ({ default: mongoose } = await import('mongoose'));
@@ -340,7 +340,7 @@ const server = createServer(async (req, res) => {
     const path = normalize(join(root, relative));
     if (!path.startsWith(root)) return res.writeHead(403).end('Forbidden');
     const file = await readFile(path);
-    res.writeHead(200, { 'Content-Type': types[extname(path)] || 'application/octet-stream', 'X-Content-Type-Options': 'nosniff' });
+    res.writeHead(200, { 'Content-Type': types[extname(path)] || 'application/octet-stream', 'X-Content-Type-Options': 'nosniff', 'Permissions-Policy': 'camera=(self)' });
     res.end(file);
   } catch (error) {
     console.error('Task Vault request failed:', error.message);

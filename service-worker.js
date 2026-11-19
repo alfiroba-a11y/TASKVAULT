@@ -1,5 +1,5 @@
-const CACHE = 'task-vault-shell-v3';
-const SHELL = ['/', '/manifest.webmanifest', '/task-vault-icon.svg'];
+const CACHE = 'task-vault-shell-v4';
+const SHELL = ['/', '/app.js', '/manifest.webmanifest', '/task-vault-icon.svg', '/task-vault-icon-192.png', '/task-vault-icon-512.png'];
 self.addEventListener('install', event => event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(SHELL))));
 self.addEventListener('activate', event => event.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(key => key !== CACHE).map(key => caches.delete(key))))));
 self.addEventListener('fetch', event => {
