@@ -8,11 +8,11 @@ Standalone reward-platform prototype with an installable web app and HashPay M-P
 npm start
 ```
 
-Open `http://localhost:4173` for the member dashboard or `http://localhost:4173/admin` for the operations preview. Local app demo data is stored in browser local storage. HashPay payment records are stored in `DATA_DIR` (defaults to `./data`).
+Open `http://localhost:4173` for the member dashboard or `http://localhost:4173/admin` for the operations preview. Local app demo data is stored in browser local storage. HashPay payment records are stored in MongoDB's `task_vault.payments` collection.
 
 ## Deploy on Coolify
 
-Create an application from this folder/repository using the included `Dockerfile`. Expose container port `4173`, attach your HTTPS domain, and mount persistent storage at `/app/data` so pending payment references survive a container restart. The server binds to `0.0.0.0` and reads Coolify's `PORT` variable.
+Create an application from this folder/repository with Base Directory set to `task-vault`. Select the included `Dockerfile` build pack (or Nixpacks, which is configured by `nixpacks.toml`). Both install the production dependencies, including Mongoose. Expose container port `4173` and attach your HTTPS domain. The server binds to `0.0.0.0` and reads Coolify's `PORT` variable.
 
 Set these values in the Coolify application's Environment Variables, then redeploy:
 
@@ -20,9 +20,12 @@ Set these values in the Coolify application's Environment Variables, then redepl
 - `HASHPAY_ACCOUNT_ID` — your HashPay payment channel ID
 - `HASHPAY_WEBHOOK_SECRET` — signing secret from HashPay
 - `PUBLIC_BASE_URL` — public HTTPS origin, such as `https://taskvault.example.com`
-- `DATA_DIR=/app/data`
+- `MONGO_URI` — your shared MongoDB connection string
+- `MONGO_DB_NAME=task_vault` — Task Vault's dedicated database name on that cluster
 
-Configure the HashPay webhook at `https://your-domain/webhooks/hashpay`. The app can also send that URL on each STK request. The `/health` endpoint reports whether payment credentials and the webhook secret are configured. Never put HashPay secrets in browser code or commit them to Git.
+Configure the HashPay webhook at `https://your-domain/webhooks/hashpay`. The app can also send that URL on each STK request. The `/health` endpoint reports MongoDB and payment configuration status. Never put HashPay secrets in browser code or commit them to Git.
+
+The Mongo connection explicitly selects the `task_vault` database (or the value of `MONGO_DB_NAME`) even if the shared connection URL names another default database. Task Vault's payment records use the `payments` collection inside that dedicated database; other apps using the same Mongo cluster and their own database names remain separate.
 
 HashPay payment prompts use the HashBack STK endpoint; the API key and account ID stay on the server. The browser's response only says that HashPay accepted the prompt. Task Vault marks a payment paid only after the signed webhook matches its reference, amount, and account ID. See the [HashPay STK and webhook documentation](https://www.hashback.co.ke/documentation).
 
