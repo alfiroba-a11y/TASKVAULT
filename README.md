@@ -1,6 +1,6 @@
 # Task Vault
 
-Standalone reward-platform prototype with an installable web app and HashPay M-Pesa STK prompts.
+Task Vault member platform with MongoDB-backed accounts, sponsored tasks and videos, referral rewards, daily check-ins, withdrawal scheduling, and HashPay M-Pesa STK prompts.
 
 ## Run locally
 
@@ -9,7 +9,7 @@ npm install
 npm start
 ```
 
-Open `http://localhost:4173` for the member dashboard or `http://localhost:4173/admin` for the operations preview. Local app demo data is stored in browser local storage. HashPay payment records are stored in MongoDB's `task_vault.payments` collection.
+Open `http://localhost:4173` for the sign-up and member experience or `http://localhost:4173/admin` for the private operations panel. Member accounts, videos, withdrawal requests, and HashPay payment records are stored in MongoDB's `task_vault` database.
 
 ## Deploy on Coolify
 
@@ -23,6 +23,10 @@ Set these values in the Coolify application's Environment Variables, then redepl
 - `PUBLIC_BASE_URL` — public HTTPS origin, such as `https://taskvault.example.com`
 - `MONGO_URI` — your shared MongoDB connection string
 - `MONGO_DB_NAME=task_vault` — Task Vault's dedicated database name on that cluster
+- `SESSION_SECRET` — long random secret used to sign member/admin session cookies
+- `ADMIN_PASSWORD` — strong password for the private `/admin` panel
+
+Set a long random value for `SESSION_SECRET` and your chosen private password for `ADMIN_PASSWORD`. Keep both locked as secrets in Coolify.
 
 Configure the HashPay webhook at `https://your-domain/webhooks/hashpay`. The app can also send that URL on each STK request. The `/health` endpoint reports MongoDB and payment configuration status. Never put HashPay secrets in browser code or commit them to Git.
 
@@ -36,7 +40,7 @@ Task Vault is a Progressive Web App. The **Download app** button opens the brows
 
 ## Prototype limits
 
-The admin path is not authenticated in this prototype. Member records and reward balances are sample browser data; withdrawals and reward claims are not real disbursements. HashPay STK prompts collect money to your configured channel, but successful prompts are not automatically converted into member reward balances. The admin deposit table remains sample UI data. Do not use this as a production wallet or payout system without server-side accounts, authenticated admin controls, a durable member/payment ledger, and a payout integration.
+Member accounts, referral credits, task completion, video reward claims, and withdrawal requests are stored in MongoDB. New visitors see a sign-up page and cannot access a member dashboard before creating an account. The hidden `/admin` route requires `ADMIN_PASSWORD`. The app contains 70 sample sponsored tasks; replace them with real advertiser offers and verify completions with the relevant offer provider before paying real rewards. Video upload uses direct HTTPS MP4/WebM URLs, with up to five quiz questions per video. A video pays once after a full watch is detected; the quiz bonus pays once after every answer is correct. Withdrawals stay locked until 26 February 2027; after that date, admin approval is still required and no automatic payout provider is connected. HashPay STK prompts collect money to your configured channel but do not increase member rewards.
 
 The signup camera flow demonstrates head-position prompts locally. It does not record, upload, or save camera frames or face templates, and it is not an identity verification service.
 

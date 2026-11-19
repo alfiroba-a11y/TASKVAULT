@@ -1,6 +1,6 @@
 FROM node:22-alpine
 WORKDIR /app
-COPY package.json server.js index.html manifest.webmanifest service-worker.js task-vault-icon.svg ./
+COPY package.json server.js app.js index.html manifest.webmanifest service-worker.js task-vault-icon.svg ./
 RUN apk add --no-cache curl \
     && (npm install --omit=dev --no-audit --no-fund || echo "WARNING: optional MongoDB driver install failed; app will launch in degraded mode")
 ENV NODE_ENV=production PORT=4173
