@@ -1,0 +1,14 @@
+{
+  "id": "/",
+  "name": "Task Vault — Rewards",
+  "short_name": "Task Vault",
+  "description": "Earn rewards from videos, check-ins, sharing, and referrals.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f7f8f5",
+  "theme_color": "#187e5a",
+  "icons": [
+    { "src": "/task-vault-icon.svg", "sizes": "any 192x192 512x512", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
