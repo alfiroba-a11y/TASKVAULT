@@ -1,21 +1,20 @@
 import { createServer } from 'node:http';
 import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import mongoose from 'mongoose';
 
 const root = fileURLToPath(new URL('.', import.meta.url));
-const dataDir = process.env.DATA_DIR || join(root, 'data');
-const storePath = join(dataDir, 'payments.json');
 const types = { '.html': 'text/html; charset=utf-8', '.css': 'text/css', '.js': 'text/javascript', '.json': 'application/json', '.webmanifest': 'application/manifest+json', '.svg': 'image/svg+xml' };
-let payments = {};
-try { payments = JSON.parse(await readFile(storePath, 'utf8')); } catch { /* first start */ }
-async function savePayments() {
-  await mkdir(dataDir, { recursive: true });
-  const temp = `${storePath}.tmp`;
-  await writeFile(temp, JSON.stringify(payments, null, 2), { mode: 0o600 });
-  await rename(temp, storePath);
-}
+if (!process.env.MONGO_URI) throw new Error('MONGO_URI is required. Set it in the deployment environment.');
+await mongoose.connect(process.env.MONGO_URI, { dbName: process.env.MONGO_DB_NAME || 'task_vault', serverSelectionTimeoutMS: 15000 });
+const paymentSchema = new mongoose.Schema({
+  reference: { type: String, required: true, unique: true, index: true }, amount: { type: Number, required: true },
+  phoneLast4: String, status: { type: String, required: true, index: true }, createdAt: { type: Date, default: Date.now },
+  checkoutId: String, merchantRequestId: String, customerMessage: String, failure: String, receipt: String, paidAt: Date
+}, { collection: 'payments', versionKey: false });
+const Payment = mongoose.model('TaskVaultPayment', paymentSchema);
 function json(res, status, body) { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(body)); }
 async function body(req, max = 10000) {
   const chunks = []; let size = 0;
@@ -49,7 +48,7 @@ async function initiatePrompt({ amount, phone, reference }) {
 const server = createServer(async (req, res) => {
   try {
     const url = new URL(req.url, 'http://localhost');
-    if (req.method === 'GET' && url.pathname === '/health') return json(res, 200, { status: 'ok', hashpayConfigured: Boolean(process.env.HASHPAY_API_KEY && process.env.HASHPAY_ACCOUNT_ID), webhookConfigured: Boolean(process.env.HASHPAY_WEBHOOK_SECRET) });
+    if (req.method === 'GET' && url.pathname === '/health') return json(res, 200, { status: mongoose.connection.readyState === 1 ? 'ok' : 'degraded', database: mongoose.connection.readyState === 1, databaseName: process.env.MONGO_DB_NAME || 'task_vault', hashpayConfigured: Boolean(process.env.HASHPAY_API_KEY && process.env.HASHPAY_ACCOUNT_ID), webhookConfigured: Boolean(process.env.HASHPAY_WEBHOOK_SECRET) });
     if (req.method === 'POST' && url.pathname === '/api/payments/prompt') {
       if (!process.env.HASHPAY_API_KEY || !process.env.HASHPAY_ACCOUNT_ID || !process.env.HASHPAY_WEBHOOK_SECRET || !(process.env.PUBLIC_BASE_URL || process.env.HASHPAY_WEBHOOK_URL)) return json(res, 503, { error: 'HashPay environment settings are incomplete.' });
       if (limited(req.socket.remoteAddress || 'unknown')) return json(res, 429, { error: 'Too many payment prompts. Try again in a minute.' });
@@ -59,23 +58,23 @@ const server = createServer(async (req, res) => {
       if (!Number.isInteger(amount) || amount < 1 || amount > 150000) return json(res, 400, { error: 'Enter a valid amount from KES 1 to KES 150,000.' });
       if (!phone) return json(res, 400, { error: 'Enter a valid Kenyan M-Pesa number.' });
       const reference = `TV${Date.now().toString(36).toUpperCase()}${randomUUID().slice(0, 6).toUpperCase()}`;
-      const record = { reference, amount, phoneLast4: phone.slice(-4), status: 'starting', createdAt: new Date().toISOString() };
-      payments[reference] = record; await savePayments();
+      const record = await Payment.create({ reference, amount, phoneLast4: phone.slice(-4), status: 'starting' });
       try {
         const provider = await initiatePrompt({ amount, phone, reference });
         record.checkoutId = provider.checkout_id || provider.CheckoutRequestID || null;
         record.merchantRequestId = provider.MerchantRequestID || null;
-        record.status = 'pending'; record.customerMessage = provider.CustomerMessage || 'Check your phone and enter your M-Pesa PIN to complete.';
-        await savePayments();
+        if (record.status !== 'paid') record.status = 'pending';
+        record.customerMessage = provider.CustomerMessage || 'Check your phone and enter your M-Pesa PIN to complete.';
+        await record.save();
         return json(res, 200, { reference, status: record.status, customerMessage: record.customerMessage });
       } catch (error) {
-        record.status = 'failed'; record.failure = error.message; await savePayments();
+        if (record.status !== 'paid') { record.status = 'failed'; record.failure = error.message; await record.save(); }
         return json(res, 502, { error: error.message });
       }
     }
     if (req.method === 'GET' && url.pathname.startsWith('/api/payments/')) {
       const reference = decodeURIComponent(url.pathname.slice('/api/payments/'.length));
-      const record = payments[reference];
+      const record = await Payment.findOne({ reference }).lean();
       return record ? json(res, 200, { reference, status: record.status, amount: record.amount, receipt: record.receipt || null }) : json(res, 404, { error: 'Payment not found.' });
     }
     if (req.method === 'POST' && url.pathname === '/webhooks/hashpay') {
@@ -87,13 +86,13 @@ const server = createServer(async (req, res) => {
       if (a.length !== b.length || !timingSafeEqual(a, b)) return json(res, 401, { error: 'Invalid webhook signature.' });
       const event = JSON.parse(raw.toString('utf8'));
       const reference = String(event.TransactionReference || event.reference || '');
-      const record = payments[reference];
+      const record = await Payment.findOne({ reference });
       if (record && record.status !== 'paid' && (event.event === 'payment.success' || String(event.ResponseCode) === '0')) {
         const paid = Number(event.TransactionAmount ?? event.amount);
         const accountMatches = !process.env.HASHPAY_ACCOUNT_ID || String(event.AccountID || process.env.HASHPAY_ACCOUNT_ID) === String(process.env.HASHPAY_ACCOUNT_ID);
         if (paid === record.amount && accountMatches) {
           record.status = 'paid'; record.receipt = String(event.TransactionReceipt || event.TransactionID || event.receipt || '');
-          record.paidAt = new Date().toISOString(); await savePayments();
+          record.paidAt = new Date(); await record.save();
         } else {
           console.warn('HashPay callback did not match the pending Task Vault payment', { reference, amount: paid, accountMatches });
         }
