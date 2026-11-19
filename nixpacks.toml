@@ -1,6 +1,5 @@
 [phases.install]
-cmds = ["npm install --omit=dev"]
+cmds = ["npm install --omit=dev --no-audit --no-fund || echo 'WARNING: optional MongoDB driver install failed; app will launch in degraded mode'"]
 
 [start]
 cmd = "npm start"
-a

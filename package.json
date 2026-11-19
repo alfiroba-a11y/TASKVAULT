@@ -4,5 +4,6 @@
   "private": true,
   "type": "module",
   "scripts": { "start": "node server.js" },
+  "optionalDependencies": { "mongoose": "^8.9.0" },
   "engines": { "node": ">=20" }
 }

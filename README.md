@@ -5,6 +5,7 @@ Standalone reward-platform prototype with an installable web app and HashPay M-P
 ## Run locally
 
 ```sh
+npm install
 npm start
 ```
 
@@ -25,7 +26,7 @@ Set these values in the Coolify application's Environment Variables, then redepl
 
 Configure the HashPay webhook at `https://your-domain/webhooks/hashpay`. The app can also send that URL on each STK request. The `/health` endpoint reports MongoDB and payment configuration status. Never put HashPay secrets in browser code or commit them to Git.
 
-The Mongo connection explicitly selects the `task_vault` database (or the value of `MONGO_DB_NAME`) even if the shared connection URL names another default database. Task Vault's payment records use the `payments` collection inside that dedicated database; other apps using the same Mongo cluster and their own database names remain separate.
+The Mongo connection explicitly selects the `task_vault` database (or the value of `MONGO_DB_NAME`) even if the shared connection URL names another default database. Task Vault's payment records use the `payments` collection inside that dedicated database; other apps using the same Mongo cluster and their own database names remain separate. If MongoDB or the Mongoose driver is unavailable, the web server still launches in degraded mode; payment requests return a clear unavailable response until MongoDB reconnects. `DATA_DIR` is not used because payment records are stored in MongoDB.
 
 HashPay payment prompts use the HashBack STK endpoint; the API key and account ID stay on the server. The browser's response only says that HashPay accepted the prompt. Task Vault marks a payment paid only after the signed webhook matches its reference, amount, and account ID. See the [HashPay STK and webhook documentation](https://www.hashback.co.ke/documentation).
 
@@ -38,3 +39,7 @@ Task Vault is a Progressive Web App. The **Download app** button opens the brows
 The admin path is not authenticated in this prototype. Member records and reward balances are sample browser data; withdrawals and reward claims are not real disbursements. HashPay STK prompts collect money to your configured channel, but successful prompts are not automatically converted into member reward balances. The admin deposit table remains sample UI data. Do not use this as a production wallet or payout system without server-side accounts, authenticated admin controls, a durable member/payment ledger, and a payout integration.
 
 The signup camera flow demonstrates head-position prompts locally. It does not record, upload, or save camera frames or face templates, and it is not an identity verification service.
+
+## Deployment recovery
+
+If Coolify logs report `Cannot find package 'mongoose'`, the container is using an older image or the optional MongoDB driver could not install. The current server catches that condition and stays online in degraded mode; Mongo-backed payment requests remain disabled until the driver and database are available. Rebuild from the latest project files with the Base Directory set to the directory containing this `package.json`. The included Dockerfile installs `curl` and defines `/health` on port `4173` for container health checks.
