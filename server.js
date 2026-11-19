@@ -20,7 +20,7 @@ try {
     passwordSalt: { type: String, required: true }, passwordHash: { type: String, required: true }, referralCode: { type: String, required: true, unique: true },
     referredBy: String, status: { type: String, default: 'Active' }, humanVerified: { type: Boolean, default: false }, humanVerifiedAt: Date, balance: { type: Number, default: 0 }, earned: { type: Number, default: 0 },
     points: { type: Number, default: 100 }, streak: { type: Number, default: 0 }, checkinDate: String, referrals: { type: Number, default: 0 },
-    completedTasks: { type: [String], default: [] }, completedVideos: { type: [String], default: [] }, completedQuizzes: { type: [String], default: [] }, shareDate: String,
+    completedTasks: { type: [String], default: [] }, taskAttempts: { type: [{ taskId: String, attemptId: String, startedAt: Date, expiresAt: Date, expected: String }], default: [] }, completedVideos: { type: [String], default: [] }, completedQuizzes: { type: [String], default: [] }, shareDate: String,
     activity: { type: [mongoose.Schema.Types.Mixed], default: [{ icon: '🎉', title: 'Welcome to Task Vault', meta: 'Just now', amount: '+ 100 points' }] },
     createdAt: { type: Date, default: Date.now }
   }, { collection: 'members', versionKey: false });
@@ -201,6 +201,21 @@ const server = createServer(async (req, res) => {
       const today = nairobiDate(); if (user.shareDate === today) return json(res, 409, { error: 'Your share reward has already been claimed today.' });
       user.shareDate = today; award(user, 0.20, 20, '↗️', `Shared on ${network}`); await user.save(); return json(res, 200, { user: publicMember(user) });
     }
+    const taskStart = url.pathname.match(/^\/api\/rewards\/tasks\/([\w-]+)\/start$/);
+    if (req.method === 'POST' && taskStart) {
+      if (!requireModels(res, User)) return;
+      const token = readToken(req, 'tv_session'), user = token?.uid ? await User.findById(token.uid) : null;
+      if (!user || user.status !== 'Active') return json(res, 401, { error: 'Sign in to start this task.' });
+      if (!requireHuman(user, res)) return;
+      const task = TASKS.find(item => item.id === taskStart[1]); if (!task) return json(res, 404, { error: 'Task not found.' });
+      if (user.completedTasks.includes(task.id)) return json(res, 409, { error: 'You have already completed this task.' });
+      const attemptId = randomBytes(18).toString('hex'), startedAt = new Date(), expiresAt = new Date(startedAt.getTime() + 15 * 60 * 1000);
+      user.taskAttempts = (user.taskAttempts || []).filter(attempt => attempt.taskId !== task.id && attempt.expiresAt > startedAt);
+      user.taskAttempts.push({ taskId: task.id, attemptId, startedAt, expiresAt, expected: task.category });
+      user.taskAttempts = user.taskAttempts.slice(-10); await user.save();
+      const choices = [...new Set([task.category, categories[(categories.indexOf(task.category) + 2) % categories.length], categories[(categories.indexOf(task.category) + 5) % categories.length], categories[(categories.indexOf(task.category) + 7) % categories.length]])].sort(() => Math.random() - 0.5);
+      return json(res, 200, { task, attemptId, minWaitSeconds: 10, question: 'Which category is shown for this activity?', choices });
+    }
     const taskComplete = url.pathname.match(/^\/api\/rewards\/tasks\/([\w-]+)\/complete$/);
     if (req.method === 'POST' && taskComplete) {
       if (!requireModels(res, User)) return;
@@ -209,6 +224,14 @@ const server = createServer(async (req, res) => {
       if (!requireHuman(user, res)) return;
       const task = TASKS.find(item => item.id === taskComplete[1]); if (!task) return json(res, 404, { error: 'Task not found.' });
       if (user.completedTasks.includes(task.id)) return json(res, 409, { error: 'You have already completed this task.' });
+      const input = JSON.parse((await body(req)).toString('utf8'));
+      const attemptIndex = (user.taskAttempts || []).findIndex(attempt => attempt.taskId === task.id && attempt.attemptId === String(input.attemptId || ''));
+      if (attemptIndex < 0) return json(res, 400, { error: 'Start the task before submitting your response.' });
+      const attempt = user.taskAttempts[attemptIndex];
+      if (attempt.expiresAt <= new Date()) { user.taskAttempts.splice(attemptIndex, 1); await user.save(); return json(res, 410, { error: 'This task session expired. Start it again.' }); }
+      if (Date.now() - attempt.startedAt.getTime() < 10000) return json(res, 425, { error: 'Review the task for at least 10 seconds before answering.' });
+      if (String(input.answer || '') !== attempt.expected) return json(res, 400, { error: 'That category does not match. Review the task and try again.' });
+      user.taskAttempts.splice(attemptIndex, 1);
       user.completedTasks.push(task.id); award(user, task.amount, Math.round(task.amount * 100), task.icon, `Completed ${task.title}`); await user.save();
       return json(res, 200, { user: publicMember(user), task });
     }

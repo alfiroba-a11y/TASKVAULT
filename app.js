@@ -13,7 +13,7 @@ async function api(path, options = {}) {
 }
 function toast(message) { const node = document.getElementById('toast'); if (!node) return; node.textContent = message; node.classList.add('show'); setTimeout(() => node.classList.remove('show'), 2800); }
 function modal(html) { document.getElementById('modal').innerHTML = html; document.getElementById('modalbg').style.display = 'flex'; }
-function closeModal() { document.getElementById('modalbg').style.display = 'none'; scanCancelled = true; if (tvScanFrame) { cancelAnimationFrame(tvScanFrame); tvScanFrame = 0; } if (tvFaceLandmarker) { tvFaceLandmarker.close(); tvFaceLandmarker = null; } if (window.tvStream) { window.tvStream.getTracks().forEach(track => track.stop()); window.tvStream = null; } }
+function closeModal() { document.getElementById('modalbg').style.display = 'none'; scanCancelled = true; if (window.tvTaskTimer) { clearInterval(window.tvTaskTimer); window.tvTaskTimer = null; } if (tvScanFrame) { cancelAnimationFrame(tvScanFrame); tvScanFrame = 0; } if (tvFaceLandmarker) { tvFaceLandmarker.close(); tvFaceLandmarker = null; } if (window.tvStream) { window.tvStream.getTracks().forEach(track => track.stop()); window.tvStream = null; } }
 document.getElementById('modalbg').addEventListener('click', e => { if (e.target === e.currentTarget) closeModal(); });
 function installApp() {
   if (window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone) { location.assign('/'); return; }
@@ -234,8 +234,22 @@ async function share(network) {
     await loadMember(); toast('Share reward added: $0.20 and 20 points.');
   } catch (e) { toast(e.message); }
 }
-function openTask(id) { const task = tasks.find(t => t.id === id); if (!task) return; const done = (member.completedTasks || []).includes(id); modal(`<div class="modal-head"><h2>${esc(task.title)}</h2><button class="x" onclick="closeModal()">×</button></div><div class="eyebrow">${esc(task.category)} · ${esc(task.duration)}</div><p>${esc(task.desc)}</p><div class="tv-statline"><span class="pill">Reward ${money(task.amount)}</span><span class="pill">${Math.round(task.amount * 100)} points</span></div><p class="tv-fine">Complete this sponsored activity only if you’re comfortable. One reward is available per account.</p><div class="modal-actions"><button class="btn btn-soft" onclick="closeModal()">Close</button><button class="btn btn-green" ${done ? 'disabled' : ''} onclick="completeTask('${esc(id)}')">${done ? 'Completed' : 'Mark task complete'}</button></div>`); }
-async function completeTask(id) { try { const result = await api(`/api/rewards/tasks/${encodeURIComponent(id)}/complete`, { method: 'POST', body: '{}' }); member = result.user; closeModal(); await loadMember(); toast(`Task completed: ${money(result.task.amount)} added.`); } catch (e) { toast(e.message); } }
+async function openTask(id) {
+  const task = tasks.find(t => t.id === id); if (!task) return;
+  if ((member.completedTasks || []).includes(id)) return toast('You have already completed this task.');
+  modal(`<div class="modal-head"><h2>${esc(task.title)}</h2><button class="x" onclick="closeModal()">×</button></div><p>Preparing your activity…</p>`);
+  try {
+    const challenge = await api(`/api/rewards/tasks/${encodeURIComponent(id)}/start`, { method: 'POST', body: '{}' });
+    let seconds = challenge.minWaitSeconds + 1;
+    const draw = () => { modal(`<div class="modal-head"><h2>${esc(task.title)}</h2><button class="x" onclick="closeModal()">×</button></div><div class="eyebrow">${esc(task.category)} · ${esc(task.duration)}</div><p>${esc(task.desc)}</p><div class="tv-statline"><span class="pill">Reward ${money(task.amount)}</span><span class="pill">${Math.round(task.amount * 100)} points</span></div><div class="tv-task-check"><b>Quick activity check</b><p>Review the activity details. Then choose the category shown above to finish this task.</p><div id="task-wait">${seconds > 0 ? `Ready in ${seconds} seconds` : 'You can answer now'}</div><div class="tv-task-answers">${challenge.choices.map(choice => `<button class="btn btn-soft" ${seconds > 0 ? 'disabled' : ''} onclick="completeTask('${esc(id)}','${esc(challenge.attemptId)}','${esc(choice)}')">${esc(choice)}</button>`).join('')}</div><div id="task-error" class="tv-error"></div></div><p class="tv-fine">A correct response after the review timer completes this activity automatically. One reward is available per account.</p>`); };
+    draw();
+    window.tvTaskTimer = setInterval(() => { seconds = Math.max(0, seconds - 1); const wait = document.getElementById('task-wait'); if (wait) wait.textContent = seconds ? `Ready in ${seconds} seconds` : 'You can answer now'; if (seconds === 0) { document.querySelectorAll('.tv-task-answers button').forEach(button => button.disabled = false); clearInterval(window.tvTaskTimer); window.tvTaskTimer = null; } }, 1000);
+  } catch (e) { modal(`<div class="modal-head"><h2>Task unavailable</h2><button class="x" onclick="closeModal()">×</button></div><p class="tv-error">${esc(e.message)}</p><button class="btn btn-soft" onclick="closeModal()">Close</button>`); }
+}
+async function completeTask(id, attemptId, answer) {
+  try { const result = await api(`/api/rewards/tasks/${encodeURIComponent(id)}/complete`, { method: 'POST', body: JSON.stringify({ attemptId, answer }) }); member = result.user; closeModal(); await loadMember(); toast(`Task completed automatically: ${money(result.task.amount)} added.`); }
+  catch (e) { const error = document.getElementById('task-error'); if (error) error.textContent = e.message; else toast(e.message); }
+}
 function openVideo(id) {
   const video = videos.find(v => String(v._id) === id); if (!video) return;
   const watched = (member.completedVideos || []).includes(id), quizDone = (member.completedQuizzes || []).includes(id);
