@@ -71,11 +71,15 @@ function readToken(req, cookieName) {
   if (got.length !== expected.length || !timingSafeEqual(got, expected)) return null;
   try { const data = JSON.parse(Buffer.from(payload, 'base64url').toString()); return data.exp > Date.now() ? data : null; } catch { return null; }
 }
+function requestIsSecure(req) {
+  const forwardedProto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim().toLowerCase();
+  return forwardedProto === 'https' || Boolean(req.socket.encrypted);
+}
 function setSession(res, req, name, data) {
-  const secure = process.env.PUBLIC_BASE_URL?.startsWith('https://') || req.headers['x-forwarded-proto'] === 'https';
+  const secure = requestIsSecure(req);
   res.setHeader('Set-Cookie', `${name}=${encodeURIComponent(signedToken({ ...data, exp: Date.now() + 1000 * 60 * 60 * 24 * 14 }))}; HttpOnly; SameSite=Lax; Path=/; Max-Age=1209600${secure ? '; Secure' : ''}`);
 }
-function clearSession(res, req, name) { const secure = process.env.PUBLIC_BASE_URL?.startsWith('https://') || req.headers['x-forwarded-proto'] === 'https'; res.setHeader('Set-Cookie', `${name}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${secure ? '; Secure' : ''}`); }
+function clearSession(res, req, name) { const secure = requestIsSecure(req); res.setHeader('Set-Cookie', `${name}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${secure ? '; Secure' : ''}`); }
 const categories = ['Survey', 'Discovery', 'Lifestyle', 'Shopping', 'Learning', 'Entertainment', 'Community', 'Technology', 'Travel', 'Food'];
 const taskTitles = [
   'Explore a new mobile wallet','Tell us your weekend plans','Discover a local coffee brand','Try a short product finder','Share your streaming picks','Explore a greener commute','Vote on a new app feature','Browse a home essentials collection','Complete a five question survey','Discover a new music playlist',
