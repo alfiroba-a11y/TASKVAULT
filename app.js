@@ -67,28 +67,69 @@ async function createAccount() {
 }
 function showHumanGate() {
   document.body.className = ''; installStyles();
-  app.innerHTML = `${topbar({ signedIn: true })}<main class="shell tv-human-page"><section class="card tv-human-card"><div class="tv-human-icon">◉</div><div class="eyebrow">One-time account check</div><h1>Verify your humanity</h1><p>Your free account is ready. Complete a short live face scan to unlock tasks and rewards. We process the camera stream on this device and do not store or upload face images.</p><div class="tv-human-status"><span>Verification status</span><b class="tv-human-pending">● Not verified</b></div><button class="btn btn-green" onclick="startHumanVerification()">Start face scan</button><small>Keep your face in the frame and follow the left, right, up, and down prompts.</small></section></main>`;
+  app.innerHTML = `${topbar({ signedIn: true })}<main class="shell tv-human-page"><section class="card tv-human-card"><div class="tv-human-icon">◉</div><div class="eyebrow">One-time account check</div><h1>Verify your humanity</h1><p>Your free account is ready. Complete a short face scan to unlock tasks and rewards. Camera images are processed on this device and are not uploaded or stored.</p><div class="tv-human-status"><span>Verification status</span><b class="tv-human-pending">● Not verified</b></div><button class="btn btn-green" onclick="startHumanVerification()">Start face scan</button><small>Follow the face movement prompts. On HTTP, your phone will capture one photo for each step.</small></section></main>`;
 }
 function startHumanVerification() {
-  scanCancelled = false; tvScanBaseline = null; tvScanSamples = [];
-  modal(`<div class="modal-head"><h2>Live face scan</h2><button class="x" onclick="closeModal()">×</button></div><p>Your camera feed stays on this device. Move your face in the requested directions while it remains inside the frame.</p><div class="camera"><video id="human-video" autoplay playsinline style="transform:none"></video><div class="guide"></div><div class="scan-prompt" id="human-prompt">Preparing camera…</div></div><div class="steps"><i class="step on"></i><i class="step"></i><i class="step"></i><i class="step"></i></div><p class="tv-fine">The scan checks for a visible face and live movement. It is not identity verification and cannot reliably detect every spoof.</p>`);
+  scanCancelled = false; tvScanBaseline = null; tvScanSamples = []; tvPhotoStage = 0; tvPhotoBaseline = null; tvPhotoLeft = 0; tvPhotoUp = 0;
+  modal(`<div class="modal-head"><h2>Live face scan</h2><button class="x" onclick="closeModal()">×</button></div><p>Your camera feed stays on this device. Move your face in the requested directions while it remains inside the frame.</p><div class="camera"><video id="human-video" autoplay playsinline style="transform:none"></video><div class="guide"></div><div class="scan-prompt" id="human-prompt">Preparing camera…</div></div><div class="tv-photo-fallback" id="photo-fallback" hidden><p id="photo-prompt">Use your front camera to take the scan photos.</p><button class="btn btn-green" onclick="document.getElementById('face-capture').click()">Open camera and take photo</button><input id="face-capture" type="file" accept="image/*" capture="user" hidden onchange="handleFacePhoto(this)"></div><div class="steps"><i class="step on"></i><i class="step"></i><i class="step"></i><i class="step"></i></div><p class="tv-fine">The scan checks for a visible face and movement. It is not identity verification and cannot reliably detect every spoof.</p>`);
   runHumanScan();
+}
+async function createFaceLandmarker(runningMode) {
+  const { FilesetResolver, FaceLandmarker } = await faceVisionLoader();
+  const vision = await FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.21/wasm');
+  const modelAssetPath = 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task';
+  const options = delegate => ({ baseOptions: { modelAssetPath, delegate }, runningMode, numFaces: 2 });
+  try { return await FaceLandmarker.createFromOptions(vision, options('GPU')); }
+  catch { return await FaceLandmarker.createFromOptions(vision, options('CPU')); }
+}
+async function runPhotoScanFallback() {
+  const video = document.getElementById('human-video'), prompt = document.getElementById('human-prompt'), fallback = document.getElementById('photo-fallback');
+  if (!fallback || scanCancelled) return;
+  if (window.tvStream) { window.tvStream.getTracks().forEach(track => track.stop()); window.tvStream = null; }
+  const heading = document.querySelector('#modal h2'); if (heading) heading.textContent = 'Face photo scan';
+  video.hidden = true; document.querySelector('.camera .guide')?.setAttribute('hidden', '');
+  prompt.textContent = 'This connection cannot show a live camera preview. Use the phone camera for five guided face photos instead.';
+  fallback.hidden = false;
+  document.getElementById('photo-prompt').textContent = 'Loading the on-device face scanner…';
+  try { tvFaceLandmarker = await createFaceLandmarker('IMAGE'); if (!scanCancelled) document.getElementById('photo-prompt').textContent = 'Photo 1 of 5: hold your face forward in the frame.'; }
+  catch (error) { document.getElementById('photo-prompt').textContent = `Face scanner could not load (${error.message || error.name}). Check your internet connection and try again.`; }
+}
+function facePose(landmarks) {
+  const nose = landmarks[1], eyeLeft = landmarks[33], eyeRight = landmarks[263], chin = landmarks[152];
+  if (!nose || !eyeLeft || !eyeRight || !chin) return null;
+  const eyeWidth = Math.abs(eyeRight.x - eyeLeft.x); if (!eyeWidth) return null;
+  const eyeMidX = (eyeLeft.x + eyeRight.x) / 2, eyeMidY = (eyeLeft.y + eyeRight.y) / 2;
+  return { yaw: (nose.x - eyeMidX) / eyeWidth, pitch: (nose.y - eyeMidY) / Math.max(.01, chin.y - eyeMidY) };
+}
+let tvPhotoStage = 0, tvPhotoBaseline = null, tvPhotoLeft = 0, tvPhotoUp = 0;
+async function handleFacePhoto(input) {
+  const file = input.files?.[0]; input.value = '';
+  if (!file || !tvFaceLandmarker || scanCancelled) return;
+  const status = document.getElementById('photo-prompt'); status.textContent = 'Checking the captured face…';
+  try {
+    const bitmap = await createImageBitmap(file), result = tvFaceLandmarker.detect(bitmap); bitmap.close();
+    const faces = result.faceLandmarks || [];
+    if (faces.length !== 1) { status.textContent = faces.length ? 'Only one face should be in the photo. Take it again.' : 'No face found. Center your face and take the photo again.'; return; }
+    const pose = facePose(faces[0]); if (!pose) { status.textContent = 'Could not read the face clearly. Try again in brighter light.'; return; }
+    if (tvPhotoStage === 0) { tvPhotoBaseline = pose; tvPhotoStage = 1; status.textContent = 'Photo 2 of 5: turn your head slightly to the left.'; }
+    else if (tvPhotoStage === 1) { if (Math.abs(pose.yaw - tvPhotoBaseline.yaw) < .09) { status.textContent = 'Turn a little farther left and take the photo again.'; return; } tvPhotoLeft = pose.yaw - tvPhotoBaseline.yaw; tvPhotoStage++; status.textContent = 'Photo 3 of 5: turn your head to the right, past the center.'; }
+    else if (tvPhotoStage === 2) { if ((pose.yaw - tvPhotoBaseline.yaw) * tvPhotoLeft >= -.08) { status.textContent = 'Turn your head to the opposite side and take the photo again.'; return; } tvPhotoUp = pose.pitch - tvPhotoBaseline.pitch; tvPhotoStage++; status.textContent = 'Photo 4 of 5: look up and take the photo.'; }
+    else if (tvPhotoStage === 3) { if (Math.abs(pose.pitch - tvPhotoBaseline.pitch) < .035) { status.textContent = 'Tilt your face upward a little and take the photo again.'; return; } tvPhotoUp = pose.pitch - tvPhotoBaseline.pitch; tvPhotoStage++; status.textContent = 'Photo 5 of 5: look down and take the final photo.'; }
+    else { if ((pose.pitch - tvPhotoBaseline.pitch) * tvPhotoUp >= -.025) { status.textContent = 'Tilt your face downward and take the photo again.'; return; } status.textContent = 'Face scan complete. Saving verification…'; await submitHumanVerification(); return; }
+    document.querySelectorAll('.steps .step').forEach((el, i) => el.classList.toggle('on', i === Math.min(tvPhotoStage - 1, 3)));
+  } catch (error) { status.textContent = `Could not read that photo (${error.message || error.name}). Try again.`; }
 }
 async function runHumanScan() {
   const prompt = document.getElementById('human-prompt');
-  if (!window.isSecureContext) { prompt.textContent = 'Camera needs a secure HTTPS connection. Open the site’s HTTPS address.'; return; }
-  if (!navigator.mediaDevices?.getUserMedia) { prompt.textContent = 'This browser does not provide camera access. Open the site directly in a supported browser.'; return; }
+  if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) { runPhotoScanFallback(); return; }
   try {
     try { window.tvStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'user' }, width: { ideal: 640 }, height: { ideal: 480 } }, audio: false }); }
     catch (e) { if (!['OverconstrainedError','ConstraintNotSatisfiedError'].includes(e.name)) throw e; window.tvStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false }); }
     if (scanCancelled) { window.tvStream.getTracks().forEach(t => t.stop()); window.tvStream = null; return; }
     const video = document.getElementById('human-video'); video.srcObject = window.tvStream; await video.play();
     prompt.textContent = 'Loading face scan…';
-    const { FilesetResolver, FaceLandmarker } = await faceVisionLoader();
     if (scanCancelled) return;
-    const vision = await FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.21/wasm');
-    try { tvFaceLandmarker = await FaceLandmarker.createFromOptions(vision, { baseOptions: { modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task', delegate: 'GPU' }, runningMode: 'VIDEO', numFaces: 2 }); }
-    catch { tvFaceLandmarker = await FaceLandmarker.createFromOptions(vision, { baseOptions: { modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task', delegate: 'CPU' }, runningMode: 'VIDEO', numFaces: 1 }); }
+    tvFaceLandmarker = await createFaceLandmarker('VIDEO');
     if (scanCancelled) { tvFaceLandmarker.close(); tvFaceLandmarker = null; return; }
     const actions = [
       { key: 'left', label: 'Move your face toward the left side of the frame' },
@@ -119,6 +160,7 @@ async function runHumanScan() {
     };
     prompt.textContent = 'Face scan is ready. Center your face in the oval.'; tvScanFrame = requestAnimationFrame(frame);
   } catch (error) {
+    if (['NotAllowedError', 'SecurityError'].includes(error.name)) { runPhotoScanFallback(); return; }
     const messages = { NotAllowedError: 'Camera permission was denied. Allow camera access for this site and try again.', SecurityError: 'Camera access requires HTTPS and permission for this site.', NotFoundError: 'No camera was found on this device.', NotReadableError: 'The camera is busy in another app. Close it and try again.' };
     if (prompt) prompt.textContent = messages[error.name] || `Face scan could not start (${error.message || error.name}). Check your connection and retry.`;
     console.error('Task Vault face scan error:', error);
