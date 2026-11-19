@@ -18,7 +18,7 @@ try {
   const userSchema = new mongoose.Schema({
     name: { type: String, required: true, trim: true }, email: { type: String, required: true, unique: true, lowercase: true, trim: true },
     passwordSalt: { type: String, required: true }, passwordHash: { type: String, required: true }, referralCode: { type: String, required: true, unique: true },
-    referredBy: String, status: { type: String, default: 'Active' }, balance: { type: Number, default: 0 }, earned: { type: Number, default: 0 },
+    referredBy: String, status: { type: String, default: 'Active' }, humanVerified: { type: Boolean, default: false }, humanVerifiedAt: Date, balance: { type: Number, default: 0 }, earned: { type: Number, default: 0 },
     points: { type: Number, default: 100 }, streak: { type: Number, default: 0 }, checkinDate: String, referrals: { type: Number, default: 0 },
     completedTasks: { type: [String], default: [] }, completedVideos: { type: [String], default: [] }, completedQuizzes: { type: [String], default: [] }, shareDate: String,
     activity: { type: [mongoose.Schema.Types.Mixed], default: [{ icon: '🎉', title: 'Welcome to Task Vault', meta: 'Just now', amount: '+ 100 points' }] },
@@ -88,7 +88,8 @@ const taskTitles = [
 ];
 const TASKS = taskTitles.map((title, i) => ({ id: `task-${String(i + 1).padStart(2, '0')}`, title, category: categories[i % categories.length], amount: [0.12, 0.18, 0.25, 0.30, 0.45, 0.60, 0.75][i % 7], duration: `${2 + (i % 6)} min`, icon: ['📝', '🔎', '✨', '🛍️', '💡', '🎯', '🌱', '📱', '🎧', '🌍'][i % 10], desc: `A short sponsored ${categories[i % categories.length].toLowerCase()} activity. Explore the content and complete the task to receive the listed reward.` }));
 const nairobiDate = (date = new Date()) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Nairobi', year: 'numeric', month: '2-digit', day: '2-digit' }).format(date);
-function publicMember(user) { return { id: user._id, name: user.name, email: user.email, status: user.status, balance: user.balance, earned: user.earned, points: user.points, streak: user.streak, referrals: user.referrals, referralCode: user.referralCode, checkinDate: user.checkinDate || null, completedTasks: user.completedTasks, completedVideos: user.completedVideos, completedQuizzes: user.completedQuizzes, activity: user.activity.slice(-20).reverse() }; }
+function publicMember(user) { return { id: user._id, name: user.name, email: user.email, status: user.status, humanVerified: Boolean(user.humanVerified), balance: user.balance, earned: user.earned, points: user.points, streak: user.streak, referrals: user.referrals, referralCode: user.referralCode, checkinDate: user.checkinDate || null, completedTasks: user.completedTasks, completedVideos: user.completedVideos, completedQuizzes: user.completedQuizzes, activity: user.activity.slice(-20).reverse() }; }
+function requireHuman(user, res) { if (user.humanVerified) return true; json(res, 403, { error: 'Complete the face scan before using earning features.' }); return false; }
 const money = n => `$${Number(n).toFixed(2)}`;
 function award(user, amount, points, icon, title) { user.balance = Number((user.balance + amount).toFixed(2)); user.earned = Number((user.earned + amount).toFixed(2)); user.points += points; user.activity.push({ icon, title, meta: 'Just now', amount: `+ ${amount ? money(amount) : `${points} points`}` }); user.activity = user.activity.slice(-30); }
 async function body(req, max = 10000) {
@@ -130,11 +131,24 @@ const server = createServer(async (req, res) => {
       res.writeHead(308, { Location: secureUrl.toString(), 'Cache-Control': 'no-store' });
       return res.end();
     }
-    if (req.method === 'GET' && url.pathname === '/api/tasks') return json(res, 200, TASKS);
+    if (req.method === 'GET' && url.pathname === '/api/tasks') {
+      if (!requireModels(res, User)) return;
+      const token = readToken(req, 'tv_session'), user = token?.uid ? await User.findById(token.uid) : null;
+      if (!user || user.status !== 'Active') return json(res, 401, { error: 'Sign in to view member tasks.' });
+      if (!requireHuman(user, res)) return;
+      return json(res, 200, TASKS);
+    }
     if (req.method === 'GET' && url.pathname === '/api/auth/me') {
       if (!requireModels(res, User)) return;
       const token = readToken(req, 'tv_session'); const user = token?.uid ? await User.findById(token.uid) : null;
       return json(res, 200, { user: user && user.status === 'Active' ? publicMember(user) : null });
+    }
+    if (req.method === 'POST' && url.pathname === '/api/auth/verify-human') {
+      if (!requireModels(res, User)) return;
+      const token = readToken(req, 'tv_session'), user = token?.uid ? await User.findById(token.uid) : null;
+      if (!user || user.status !== 'Active') return json(res, 401, { error: 'Sign in before verifying your account.' });
+      user.humanVerified = true; user.humanVerifiedAt = new Date(); await user.save();
+      return json(res, 200, { user: publicMember(user) });
     }
     if (req.method === 'POST' && url.pathname === '/api/auth/signup') {
       if (!requireModels(res, User)) return;
@@ -168,6 +182,7 @@ const server = createServer(async (req, res) => {
       if (!requireModels(res, User)) return;
       const token = readToken(req, 'tv_session'), user = token?.uid ? await User.findById(token.uid) : null;
       if (!user || user.status !== 'Active') return json(res, 401, { error: 'Sign in to claim your daily check-in.' });
+      if (!requireHuman(user, res)) return;
       const today = nairobiDate(); if (user.checkinDate === today) return json(res, 409, { error: 'You have already checked in today.' });
       const yesterday = nairobiDate(new Date(Date.now() - 86400000)); user.streak = user.checkinDate === yesterday ? user.streak + 1 : 1; user.checkinDate = today;
       award(user, 0.10, 10, '📅', 'Daily check-in bonus'); await user.save(); return json(res, 200, { user: publicMember(user) });
@@ -176,6 +191,7 @@ const server = createServer(async (req, res) => {
       if (!requireModels(res, User)) return;
       const token = readToken(req, 'tv_session'), user = token?.uid ? await User.findById(token.uid) : null;
       if (!user || user.status !== 'Active') return json(res, 401, { error: 'Sign in to share and earn.' });
+      if (!requireHuman(user, res)) return;
       const input = JSON.parse((await body(req)).toString('utf8')), network = String(input.network || '');
       if (!['WhatsApp', 'Facebook', 'Instagram'].includes(network)) return json(res, 400, { error: 'Choose a supported social network.' });
       const today = nairobiDate(); if (user.shareDate === today) return json(res, 409, { error: 'Your share reward has already been claimed today.' });
@@ -186,6 +202,7 @@ const server = createServer(async (req, res) => {
       if (!requireModels(res, User)) return;
       const token = readToken(req, 'tv_session'), user = token?.uid ? await User.findById(token.uid) : null;
       if (!user || user.status !== 'Active') return json(res, 401, { error: 'Sign in to complete tasks.' });
+      if (!requireHuman(user, res)) return;
       const task = TASKS.find(item => item.id === taskComplete[1]); if (!task) return json(res, 404, { error: 'Task not found.' });
       if (user.completedTasks.includes(task.id)) return json(res, 409, { error: 'You have already completed this task.' });
       user.completedTasks.push(task.id); award(user, task.amount, Math.round(task.amount * 100), task.icon, `Completed ${task.title}`); await user.save();
@@ -193,6 +210,9 @@ const server = createServer(async (req, res) => {
     }
     if (req.method === 'GET' && url.pathname === '/api/videos') {
       if (!requireModels(res, Video)) return;
+      const token = readToken(req, 'tv_session'), user = token?.uid ? await User.findById(token.uid) : null;
+      if (!user || user.status !== 'Active') return json(res, 401, { error: 'Sign in to view member videos.' });
+      if (!requireHuman(user, res)) return;
       const videos = await Video.find({ status: 'Live' }).sort({ createdAt: -1 }).lean();
       return json(res, 200, videos.map(({ questions, ...video }) => ({ ...video, questions: (questions || []).map(q => ({ prompt: q.prompt })) })));
     }
@@ -200,6 +220,7 @@ const server = createServer(async (req, res) => {
       if (!requireModels(res, User) || !Video) return;
       const token = readToken(req, 'tv_session'), user = token?.uid ? await User.findById(token.uid) : null;
       if (!user || user.status !== 'Active') return json(res, 401, { error: 'Sign in to earn video rewards.' });
+      if (!requireHuman(user, res)) return;
       const id = url.pathname.split('/')[3], video = await Video.findOne({ _id: id, status: 'Live' }); if (!video) return json(res, 404, { error: 'Video is no longer available.' });
       if (user.completedVideos.includes(id)) return json(res, 409, { error: 'This video was already completed.' });
       const input = JSON.parse((await body(req)).toString('utf8')), watched = Number(input.watchedSeconds), duration = Number(input.duration);
@@ -211,6 +232,7 @@ const server = createServer(async (req, res) => {
       if (!requireModels(res, User) || !Video) return;
       const token = readToken(req, 'tv_session'), user = token?.uid ? await User.findById(token.uid) : null;
       if (!user || user.status !== 'Active') return json(res, 401, { error: 'Sign in to answer video questions.' });
+      if (!requireHuman(user, res)) return;
       const video = await Video.findOne({ _id: quizRoute[1], status: 'Live' }); if (!video) return json(res, 404, { error: 'Video not found.' });
       if (!user.completedVideos.includes(String(video._id))) return json(res, 403, { error: 'Watch the video first.' });
       if (user.completedQuizzes.includes(String(video._id))) return json(res, 409, { error: 'You have already completed this quiz.' });
@@ -223,6 +245,7 @@ const server = createServer(async (req, res) => {
       if (!requireModels(res, User) || !Withdrawal) return;
       const token = readToken(req, 'tv_session'), user = token?.uid ? await User.findById(token.uid) : null;
       if (!user || user.status !== 'Active') return json(res, 401, { error: 'Sign in to request a withdrawal.' });
+      if (!requireHuman(user, res)) return;
       if (nairobiDate() < '2027-02-26') return json(res, 403, { error: 'Withdrawals open on 26 February 2027.' });
       const input = JSON.parse((await body(req)).toString('utf8')), amount = Number(input.amount), method = String(input.method || ''), destination = String(input.destination || '').trim().slice(0, 120);
       if (!Number.isFinite(amount) || amount < 1 || amount > user.balance || !['M-Pesa', 'PayPal'].includes(method) || !destination) return json(res, 400, { error: 'Enter a valid payout destination and an amount between $1.00 and your available rewards.' });
