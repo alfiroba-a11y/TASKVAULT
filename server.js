@@ -123,6 +123,13 @@ async function initiatePrompt({ amount, phone, reference }) {
 const server = createServer(async (req, res) => {
   try {
     const url = new URL(req.url, 'http://localhost');
+    const publicBaseUrl = process.env.PUBLIC_BASE_URL || '';
+    const forwardedProto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim().toLowerCase();
+    if (publicBaseUrl.startsWith('https://') && forwardedProto === 'http' && !['localhost', '127.0.0.1'].includes(url.hostname) && url.pathname !== '/health' && (req.method === 'GET' || req.method === 'HEAD')) {
+      const secureUrl = new URL(req.url, publicBaseUrl);
+      res.writeHead(308, { Location: secureUrl.toString(), 'Cache-Control': 'no-store' });
+      return res.end();
+    }
     if (req.method === 'GET' && url.pathname === '/api/tasks') return json(res, 200, TASKS);
     if (req.method === 'GET' && url.pathname === '/api/auth/me') {
       if (!requireModels(res, User)) return;
